@@ -1,81 +1,193 @@
-# CDC with Debezium, Kafka, Postgres, Docker 
 
-## Overview
 
-This Python script is designed to generate simulated financial transactions and insert them into a PostgreSQL database. It's particularly useful for setting up a test environment for Change Data Capture (CDC) with Debezium. The script uses the `faker` library to create realistic, yet fictitious, transaction data and inserts it into a PostgreSQL table.
+#  CDC Streaming avec Kafka, Debezium, Spark et Grafana
 
-## System Architecture
-![system architecture.png](system%20architecture.png)
+## Description du projet
 
-## Prerequisites
+Ce projet met en place une **chaîne de traitement temps réel** basée sur **Change Data Capture (CDC)**.
+Chaque transaction insérée dans **PostgreSQL** est automatiquement capturée par **Debezium**, envoyée à **Kafka**, traitée par **Spark Structured Streaming**, et exposée sous forme de métriques Prometheus visualisables dans **Grafana**.
 
-Before running this script, ensure you have the following installed:
-- Python 3.9+
-- `psycopg2` library for Python
-- `faker` library for Python
-- PostgreSQL server running locally or accessible remotely
-- Docker and Docker Compose installed on your machine.
-- Basic understanding of Docker, Kafka, and Postgres.
+###  Pipeline complet :
 
-## Installation
+1. **PostgreSQL** : Base de données source contenant les transactions financières.
+2. **Debezium** : Capture les changements (INSERT, UPDATE, DELETE) et les publie dans Kafka.
+3. **Kafka** : Sert de bus de messages distribué.
+4. **Spark Structured Streaming** : Consomme les événements Kafka, transforme les données, expose des métriques vers Prometheus.
+5. **Prometheus** : Scrape et stocke les métriques exportées par Spark.
+6. **Grafana** : Visualisation et tableaux de bord temps réel.
 
-1. **Install Required Python Libraries:**
+---
 
-   You can install the required libraries using pip:
+##  Prérequis
 
-   ```bash
-   pip install psycopg2-binary faker
-   ```
+* Docker & Docker Compose
+* Python 3.8+
+* Accès internet (pour télécharger les images Docker)
+* `pip install faker psycopg2`
 
-## Services in the Compose File
+---
 
-- **Zookeeper:** A centralized service for maintaining configuration information, naming, providing distributed synchronization, and providing group services.
-- **Kafka Broker:** A distributed streaming platform that is used here for handling real-time data feeds.
-- **Confluent Control Center:** A web-based tool for managing and monitoring Apache Kafka.
-- **Debezium:** An open-source distributed platform for change data capture.
-- **Debezium UI:** A user interface for managing and monitoring Debezium connectors.
-- **Postgres:** An open-source relational database.
+##  Lancer l’environnement complet
 
-## Getting Started
+### 1. Démarrer l’infrastructure
 
-1. **Clone the Repository:**
-   Ensure you have this Docker Compose file in your local system. If it's part of a repository, clone the repository to your local machine.
+```bash
+docker-compose up -d
+```
 
-2. **Navigate to the Directory:**
-   Open a terminal and navigate to the directory containing the Docker Compose file.
+Cela va lancer :
 
-3. **Run Docker Compose:**
-   Execute the following command to start all services defined in the Docker Compose file:
+* Zookeeper (2181)
+* Kafka Broker (9092 / 29092)
+* Control Center Confluent (9021)
+* PostgreSQL (5432)
+* Debezium Connect (8093)
+* Debezium UI (8080)
+* Spark (8081 / 4040)
+* Prometheus (9090)
+* Grafana (3000)
 
-   ```bash
-   docker-compose up -d
-   ```
+---
 
-   This command will download the necessary Docker images, create containers, and start the services in detached mode.
+### 2. Créer la table et insérer des données dans PostgreSQL
 
-4. **Verify the Services:**
-   Check if all the services are up and running:
+Le script **`transactions_generator.py`** crée automatiquement la table `transactions` et insère une transaction factice.
 
-   ```bash
-   docker-compose ps
-   ```
+Exécute-le avec :
 
-   You should see all services listed as 'running'.
+```bash
+python transactions_generator.py
+```
 
-5. **Accessing the Services:**
-   - Kafka Control Center is accessible at `http://localhost:9021`.
-   - Debezium UI is accessible at `http://localhost:8080`.
-   - Postgres is accessible on the default port `5432`.
+ Exemple de transaction générée :
 
-6. **Shutting Down:**
-   To stop and remove the containers, networks, and volumes, run:
+```json
+{
+  "transactionId": "9b8a4d72-4f6c-41d4-bf9b-8f1d45c37d55",
+  "userId": "johndoe",
+  "timestamp": 1694091234,
+  "amount": 450.75,
+  "currency": "USD",
+  "city": "Paris",
+  "country": "France",
+  "merchantName": "ACME Corp",
+  "paymentMethod": "credit_card",
+  "ipAddress": "192.168.0.1",
+  "voucherCode": "DISCOUNT10",
+  "affiliateId": "aa9b-1234-xyz"
+}
+```
 
-   ```bash
-   docker-compose down
-   ```
+---
 
-## Customization
-You can modify the Docker Compose file to suit your needs. For example, you might want to persist data in Postgres by adding a volume for the Postgres service.
+### 3. Configurer Debezium pour PostgreSQL
 
-## Note
-This setup is intended for development and testing purposes. For production environments, consider additional factors like security, scalability, and data persistence.
+Déclare un connecteur via l’API REST de Debezium :
+
+```bash
+curl -X POST http://localhost:8093/connectors/ -H "Content-Type: application/json" -d '{
+  "name": "postgres-transactions-connector",
+  "config": {
+    "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+    "database.hostname": "postgres",
+    "database.port": "5432",
+    "database.user": "postgres",
+    "database.password": "postgres",
+    "database.dbname": "financial_db",
+    "database.server.name": "cdc",
+    "table.include.list": "public.transactions",
+    "plugin.name": "pgoutput",
+    "slot.name": "debezium_slot"
+  }
+}'
+```
+
+ Kafka va maintenant recevoir les changements sur le topic :
+`cdc.public.transactions`
+
+---
+
+### 4. Lancer le job Spark
+
+Lancer ton script Spark CDC :
+
+```bash
+spark-submit \
+  --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.4.0 \
+  spark_cdc_consumer.py
+```
+
+📍 Ce job :
+
+* Consomme `cdc.public.transactions` depuis Kafka
+* Décode les données Debezium
+* Expose des métriques sur `http://localhost:8081/metrics`
+
+---
+
+### 5. Vérifier Prometheus
+
+Ouvre [http://localhost:9090](http://localhost:9090) et vérifie que les métriques Spark sont bien scrappées.
+Exemples de métriques disponibles :
+
+* `cdc_transactions_total` → compteur global des transactions
+* `cdc_current_amount_eur` → dernier montant par ville/marchand
+* `cdc_tps` → transactions par seconde
+* `cdc_transaction_amount_euro` → histogramme des montants
+
+---
+
+### 6. Visualiser dans Grafana
+
+1. Accède à Grafana : [http://localhost:3000](http://localhost:3000)
+
+   * **User** : admin
+   * **Password** : admin
+2. Ajoute Prometheus comme source de données (`http://prometheus:9090`)
+3. Crée un dashboard avec panels :
+
+   * Transactions par seconde (TPS)
+   * Volume de transactions par pays
+   * Montant moyen par ville/marchand
+   * Histogramme des montants
+
+---
+
+##  Tests
+
+* Insérer manuellement une transaction dans PostgreSQL :
+
+```bash
+docker exec -it postgres psql -U postgres -d financial_db  
+```
+
+```sql
+INSERT INTO transactions(transaction_id, user_id, timestamp, amount, currency, city, country, merchant_name, payment_method, ip_address, affiliateId, voucher_code)
+VALUES ('tx123', 'alice', NOW(), 99.99, 'USD', 'London', 'UK', 'Shopify', 'credit_card', '192.168.1.10', 'aff-001', 'DISCOUNT10');
+```
+
+* Vérifie ensuite dans Grafana que la métrique **`cdc_transactions_total`** a bien été incrémentée.
+
+---
+
+##  Services exposés
+
+| Service       | Port local  |
+| ------------- | ----------- |
+| PostgreSQL    | 5432        |
+| Kafka Broker  | 9092        |
+| Kafka Control | 9021        |
+| Debezium      | 8093        |
+| Debezium UI   | 8080        |
+| Spark Master  | 8081 / 4040 |
+| Prometheus    | 9090        |
+| Grafana       | 3000        |
+
+---
+
+## Améliorations futures
+
+* Ajouter **alerting Prometheus** (ex: alerte si TPS > seuil)
+* Déployer sur Kubernetes avec Helm
+* Gérer le **multi-database CDC** (ex: plusieurs tables)
+

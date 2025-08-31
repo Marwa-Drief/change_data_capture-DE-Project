@@ -16,7 +16,7 @@ services:
       retries: 20
       interval: 10s
     networks:
-      code-with-yu:
+      - cdc-network
 
   broker:
     image: confluentinc/cp-kafka:7.4.0
@@ -45,7 +45,7 @@ services:
       timeout: 10s
       retries: 10
     networks:
-      code-with-yu:
+      - cdc-network
 
   control-center:
     image: confluentinc/cp-enterprise-control-center:7.4.0
@@ -65,7 +65,7 @@ services:
       CONFLIENT_METRICS_ENABLE: 'false'
       PORT: 9021
     networks:
-      - code-with-yu
+      - cdc-network
     healthcheck:
       test: [ "CMD", "curl", "-f", "http://localhost:9021/health" ]
       interval: 30s
@@ -73,7 +73,7 @@ services:
       retries: 5
 
   debezium:
-    image: debezium/connect:latest
+    image: debezium/connect:2.5
     container_name: debezium
     hostname: debezium
     depends_on:
@@ -101,10 +101,11 @@ services:
       timeout: 5s
       retries: 5
     networks:
-      code-with-yu:
+      - cdc-network
 
   debezium-ui:
-    image: debezium/debezium-ui:latest
+    image: debezium/debezium-ui:1.9
+
     container_name: debezium-ui
     hostname: debezium-ui
     depends_on:
@@ -115,7 +116,7 @@ services:
     environment:
       KAFKA_CONNECT_URIS: http://debezium:8083
     networks:
-      code-with-yu:
+      - cdc-network
 
   postgres:
     image: postgres:latest
@@ -124,9 +125,11 @@ services:
     ports:
       - '5432:5432'
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: financial_db
+    - POSTGRES_USER=postgres
+    - POSTGRES_PASSWORD=postgres
+    - POSTGRES_DB=financial_db
+    - POSTGRES_INITDB_ARGS=-E UTF8 --locale=C
+    - wal_level=logical   # 🔑 Essentiel pour Debezium
     command: [ 'postgres', '-c', 'wal_level=logical' ]
     healthcheck:
       test: [ 'CMD', 'psql', '-U', 'postgres', '-c', 'SELECT 1' ]
@@ -134,9 +137,72 @@ services:
       timeout: 5s
       retries: 5
     networks:
-      code-with-yu:
+      - cdc-network
+  spark:
+    image: bitnami/spark:latest
+    container_name: spark-master
+    ports:
+      - "8081:8080"
+      - "4040:4040"
+    environment:
+      - SPARK_MODE=master
+    networks:
+      - cdc-network
+
+  spark-worker:
+    image: bitnami/spark:latest
+    depends_on:
+      - spark
+    environment:
+      - SPARK_MODE=worker
+      - SPARK_MASTER_URL=spark://spark:7077
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+    networks:
+      - cdc-network
+  
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+    networks:
+      cdc-network:
+        ipv4_address: 172.20.0.10  # IP fixe pour éviter les soucis de résolution
+    depends_on:
+      - spark
+
+ 
+  grafana:
+    image: grafana/grafana-enterprise:latest
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana-storage:/var/lib/grafana
+    networks:
+      cdc-network:
+        ipv4_address: 172.20.0.11
+    depends_on:
+      - prometheus
+
+
 
 networks:
-  code-with-yu:
-    name: code-with-yu
+  cdc-network:
     driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/24  # Pour éviter les conflits
+
+volumes:
+  grafana-storage:
