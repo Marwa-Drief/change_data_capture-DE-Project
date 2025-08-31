@@ -22,8 +22,7 @@ Chaque transaction insérée dans **PostgreSQL** est automatiquement capturée p
 
 * Docker & Docker Compose
 * Python 3.8+
-* Accès internet (pour télécharger les images Docker)
-* `pip install faker psycopg2`
+
 
 ---
 
